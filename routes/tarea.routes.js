@@ -1,12 +1,13 @@
 import { Router } from "express"
 import TareaController from "../controllers/TareaController.js"
-import { requireAuth, requireAdmin } from "../middlewares/auth.js"
+import { requireAuth, requireModulo } from "../middlewares/auth.js"
+import { COMPARAR } from "../utils/modulos.js"
 
 const router = Router()
 
-// Asignar es potestad del administrador. El trabajador lee y cierra sus
-// tareas desde su propio modulo, directo contra la base.
-router.use(requireAuth, requireAdmin)
+// Asignar una tarea nace de la comparacion, asi que va con ese modulo. El
+// trabajador lee y cierra las suyas desde su propio modulo, contra la base.
+router.use(requireAuth, requireModulo(COMPARAR))
 
 router.get("/trabajadores", TareaController.trabajadores)
 router.get("/", TareaController.listar)

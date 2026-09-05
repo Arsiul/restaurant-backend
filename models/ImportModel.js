@@ -1,4 +1,5 @@
 import { adminClient } from "../config/supabase.js"
+import { ARCHIVOS, COMPARAR } from "../utils/modulos.js"
 
 const LOTE = 500
 
@@ -17,9 +18,17 @@ class ImportModel {
     this.db = adminClient()
   }
 
-  /** El trabajador solo ve lo suyo. El administrador ve todo. */
+  /**
+   * Quien revisa o compara necesita ver los archivos de todos; quien solo
+   * importa ve los suyos. El alcance sale del modulo y ya no del rol, asi
+   * un trabajador con "Archivos cargados" concedido revisa igual que un
+   * administrador, que es justamente para lo que sirve repartir modulos.
+   */
   aplicarAlcance(query) {
-    if (this.user.role === "admin") return query
+    const suyos = this.user.modulos || []
+
+    if (suyos.includes(ARCHIVOS) || suyos.includes(COMPARAR)) return query
+
     return query.eq("user_id", this.user.id)
   }
 

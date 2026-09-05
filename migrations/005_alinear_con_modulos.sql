@@ -1,201 +1,94 @@
 -- =====================================================================
--- 002  Operaciones de estructura ejecutables desde el frontend
+-- 005  Alineacion con el sistema de modulos de la plataforma
 --
--- ATENCION AL ORDEN AL REAPLICAR. Dos funciones de este archivo se vuelven
--- a emitir mas adelante y la ultima version es la que vale:
+-- POR QUE EXISTE ESTE ARCHIVO
 --
---   empresa_agregar_columna  ->  003, que ademas cierra la tarea que la pedia
---   empresa_materializar     ->  005, con la guarda del modulo importar
+-- La base viene con un sistema de permisos por modulo que NO pertenece a
+-- este proyecto y que este repositorio no debe administrar:
 --
--- Correr 002 despues de 003 o 005 revierte esas dos en silencio.
+--   cursos / curso_modulos / usuario_cursos / usuario_modulos
+--   profiles.activo
+--   app_tiene_modulo(clave)  ->  emp_exigir_modulo(clave)
 --
--- El modulo del trabajador ya no pasa por el backend: el navegador llama
--- estas funciones directamente contra PostgREST.
+-- Es una capa de plataforma compartida con otras aplicaciones del mismo
+-- proyecto de Supabase. Aqui se CONSUME, nunca se altera: no se crea, no
+-- se modifica y no se borra ninguna de esas tablas ni de esas funciones.
 --
--- Son SECURITY DEFINER, asi que corren con los permisos del dueno y pueden
--- hacer DDL. Lo que impide que cualquiera las use es que cada una empieza
--- verificando que quien llama tenga rol de trabajador, y que todo nombre
--- que llega desde el navegador pasa por validacion y por format('%I').
+-- Lo que si es de este proyecto son las siete funciones empresa_*, y ahi
+-- estaba el problema: en la base ya exigen modulo, pero 002 y 003 todavia
+-- las emitian exigiendo rol. Reaplicar 002 desactivaba el sistema de
+-- modulos entero, en silencio. Este archivo las vuelve a emitir tal como
+-- estan vivas, de modo que correr 001..005 en orden reproduzca la base.
+--
+-- CLAVES DE MODULO, tomadas de lo que exige hoy cada funcion:
+--
+--   big_data.importar    ->  empresa_materializar
+--   big_data.estructura  ->  las otras seis
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
--- Guardas
+-- Modulos efectivos de quien llama
+--
+-- Espejo de app_tiene_modulo, pero devolviendo el conjunto en vez de
+-- responder por una clave suelta: el backend lo necesita entero para
+-- decidir que menu dibujar. Es de solo lectura sobre la plataforma.
+--
+-- Lleva prefijo emp_ para no invadir el espacio de nombres app_, que es
+-- de la plataforma compartida.
 -- ---------------------------------------------------------------------
-
-create or replace function public.emp_exigir_trabajador()
-returns uuid
-language plpgsql
+create or replace function public.emp_mis_modulos()
+returns text[]
+language sql
 stable
 security definer
 set search_path = public
 as $$
-declare
-  v_id  uuid;
-  v_rol text;
-begin
-  v_id := auth.uid();
-
-  if v_id is null then
-    raise exception 'Sesion no valida' using errcode = '42501';
-  end if;
-
-  select role into v_rol from public.profiles where id = v_id;
-
-  if v_rol is distinct from 'trabajador' then
-    raise exception 'Esta operacion es solo para trabajadores' using errcode = '42501';
-  end if;
-
-  return v_id;
-end
+  select case
+    -- El administrador pasa por encima del reparto, igual que en
+    -- app_tiene_modulo. Se le devuelve el catalogo activo completo.
+    when exists (
+      select 1 from public.profiles p
+      where p.id = auth.uid() and p.activo and p.role = 'admin'
+    )
+    then (
+      select coalesce(array_agg(cm.clave), '{}')
+        from public.curso_modulos cm
+        join public.cursos c on c.id = cm.curso_id
+       where cm.activo and c.activo
+    )
+    else (
+      -- Hace falta estar inscrito en el curso Y tener el modulo asignado.
+      select coalesce(array_agg(distinct cm.clave), '{}')
+        from public.usuario_modulos um
+        join public.curso_modulos cm on cm.id = um.modulo_id
+        join public.cursos c on c.id = cm.curso_id
+        join public.usuario_cursos uc
+          on uc.user_id = um.user_id and uc.curso_id = c.id
+        join public.profiles p on p.id = um.user_id
+       where um.user_id = auth.uid()
+         and p.activo and um.activo and uc.activo and cm.activo and c.activo
+    )
+  end
 $$;
 
--- Unica puerta para decidir sobre que tabla se puede operar. Sin esto, un
--- nombre enviado desde el navegador permitiria alterar auth.users.
-create or replace function public.emp_validar_tabla(p_tabla text)
-returns text
-language plpgsql
-immutable
-as $$
-declare
-  v text;
-begin
-  v := lower(btrim(coalesce(p_tabla, '')));
+revoke all on function public.emp_mis_modulos() from public, anon;
+grant execute on function public.emp_mis_modulos() to authenticated;
 
-  if v !~ '^[a-z][a-z0-9_]{0,58}$' then
-    raise exception 'Nombre de tabla no valido: %', p_tabla using errcode = '22023';
-  end if;
+comment on function public.emp_mis_modulos() is
+  'Modulos efectivos del usuario autenticado. Solo lectura sobre la capa de cursos, que es de la plataforma compartida.';
 
-  if v <> 'empresa_datos' and v not like 'emp\_%' then
-    raise exception 'Solo se permite operar sobre empresa_datos o tablas con prefijo emp_'
-      using errcode = '42501';
-  end if;
-
-  return v;
-end
-$$;
-
-create or replace function public.emp_validar_columna(p_columna text)
-returns text
-language plpgsql
-immutable
-as $$
-declare
-  v text;
-begin
-  v := lower(btrim(coalesce(p_columna, '')));
-
-  if v !~ '^[a-z][a-z0-9_]{0,58}$' then
-    raise exception 'La columna debe empezar con letra y usar solo letras, numeros y guion bajo'
-      using errcode = '22023';
-  end if;
-
-  if v in ('id', 'import_id', 'fila', 'created_at') then
-    raise exception '"%" es una columna reservada del sistema', v using errcode = '22023';
-  end if;
-
-  return v;
-end
-$$;
-
-create or replace function public.emp_tipo_sql(p_tipo text)
-returns text
-language plpgsql
-immutable
-as $$
-declare
-  v text;
-begin
-  v := case lower(btrim(coalesce(p_tipo, '')))
-         when 'texto'    then 'text'
-         when 'numero'   then 'numeric'
-         when 'entero'   then 'integer'
-         when 'booleano' then 'boolean'
-         when 'fecha'    then 'date'
-         when 'moneda'   then 'numeric(12,2)'
-       end;
-
-  if v is null then
-    raise exception 'Tipo no permitido. Use: texto, numero, entero, booleano, fecha, moneda'
-      using errcode = '22023';
-  end if;
-
-  return v;
-end
-$$;
-
--- ---------------------------------------------------------------------
--- Conversores tolerantes. Un CSV trae texto en todas sus celdas; si una
--- no convierte, la fila entra con null en vez de abortar la importacion.
--- ---------------------------------------------------------------------
-
-create or replace function public.emp_a_numero(p text)
-returns numeric language plpgsql immutable as $$
-begin
-  return nullif(replace(btrim(coalesce(p, '')), ',', ''), '')::numeric;
-exception when others then
-  return null;
-end $$;
-
-create or replace function public.emp_a_entero(p text)
-returns integer language plpgsql immutable as $$
-begin
-  return round(nullif(replace(btrim(coalesce(p, '')), ',', ''), '')::numeric)::integer;
-exception when others then
-  return null;
-end $$;
-
-create or replace function public.emp_a_booleano(p text)
-returns boolean language plpgsql immutable as $$
-declare v text;
-begin
-  v := lower(btrim(coalesce(p, '')));
-  if v = '' then return null; end if;
-  return v in ('si', 'sí', 'true', 't', '1', 'x', 'y', 'yes');
-end $$;
-
-create or replace function public.emp_a_fecha(p text)
-returns date language plpgsql immutable as $$
-begin
-  return nullif(btrim(coalesce(p, '')), '')::date;
-exception when others then
-  return null;
-end $$;
-
--- Expresion SQL que convierte una clave del JSONB al tipo destino.
-create or replace function public.emp_expresion(p_original text, p_tipo text)
-returns text
-language plpgsql
-immutable
-as $$
-begin
-  return case lower(p_tipo)
-    when 'entero'   then format('public.emp_a_entero(r.data->>%L)', p_original)
-    when 'numero'   then format('public.emp_a_numero(r.data->>%L)', p_original)
-    when 'moneda'   then format('public.emp_a_numero(r.data->>%L)', p_original)
-    when 'booleano' then format('public.emp_a_booleano(r.data->>%L)', p_original)
-    when 'fecha'    then format('public.emp_a_fecha(r.data->>%L)', p_original)
-    else                 format('nullif(btrim(r.data->>%L), '''')', p_original)
-  end;
-end
-$$;
-
-create or replace function public.emp_registrar(
-  p_tabla text, p_operacion text, p_detalle jsonb, p_motivo text, p_sql text
-)
-returns void
-language sql
-security definer
-set search_path = public
-as $$
-  insert into public.cambios_estructura (tabla, operacion, detalle, motivo, sql_aplicado, user_id)
-  values (p_tabla, p_operacion, coalesce(p_detalle, '{}'::jsonb), nullif(btrim(coalesce(p_motivo, '')), ''), p_sql, auth.uid())
-$$;
 
 -- =====================================================================
--- Funciones que llama el frontend
+-- Las siete funciones empresa_*, exigiendo modulo en vez de rol
+--
+-- Son identicas a las de 002 y 003 salvo por esa linea: se generaron a
+-- partir de ellas justamente para que no se cuele ninguna otra
+-- diferencia. Esta es la version que ya corre en la base; aqui queda
+-- escrita para que el repositorio pueda reproducirla.
+--
+-- empresa_agregar_columna sale de 003, que es la que ademas cierra la
+-- tarea que pedia esa columna.
 -- =====================================================================
-
--- Tablas que el trabajador puede administrar.
 create or replace function public.empresa_tablas()
 returns jsonb
 language plpgsql
@@ -205,7 +98,7 @@ set search_path = public
 as $$
 declare v jsonb;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.estructura');
 
   select coalesce(jsonb_agg(jsonb_build_object('tabla', c.relname, 'filas', coalesce(s.n_live_tup, 0))
                             order by c.relname), '[]'::jsonb)
@@ -221,7 +114,6 @@ begin
 end
 $$;
 
--- Filas y columnas de una tabla administrada.
 create or replace function public.empresa_leer(
   p_tabla text default 'empresa_datos',
   p_limite integer default 25,
@@ -240,7 +132,7 @@ declare
   v_filas  jsonb;
   v_total  integer;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.estructura');
 
   v_tabla  := public.emp_validar_tabla(p_tabla);
   v_limite := least(greatest(coalesce(p_limite, 25), 1), 500);
@@ -273,7 +165,6 @@ begin
 end
 $$;
 
--- ALTER TABLE ... ADD COLUMN
 create or replace function public.empresa_agregar_columna(
   p_tabla   text,
   p_columna text,
@@ -287,13 +178,14 @@ security definer
 set search_path = public
 as $$
 declare
-  v_tabla   text;
-  v_columna text;
-  v_tipo    text;
-  v_sufijo  text := '';
-  v_sql     text;
+  v_tabla    text;
+  v_columna  text;
+  v_tipo     text;
+  v_sufijo   text := '';
+  v_sql      text;
+  v_cerradas integer := 0;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.estructura');
 
   v_tabla   := public.emp_validar_tabla(p_tabla);
   v_columna := public.emp_validar_columna(p_columna);
@@ -330,12 +222,25 @@ begin
     p_motivo, v_sql
   );
 
-  return jsonb_build_object('tabla', v_tabla, 'columna', v_columna, 'tipo', lower(p_tipo));
+  -- Si habia una tarea pendiente pidiendo justo esta columna, se cierra.
+  update public.tareas
+     set estado = 'completada', completada_at = now(), cierre = 'automatico'
+   where asignada_a = auth.uid()
+     and estado = 'pendiente'
+     and columna_sugerida = v_columna
+     and tabla_destino = v_tabla;
+
+  get diagnostics v_cerradas = row_count;
+
+  return jsonb_build_object(
+    'tabla', v_tabla,
+    'columna', v_columna,
+    'tipo', lower(p_tipo),
+    'tareasCerradas', v_cerradas
+  );
 end
 $$;
 
--- CREATE TABLE emp_...
--- p_columnas: [{"nombre": "puntos", "tipo": "entero"}, ...]
 create or replace function public.empresa_crear_tabla(
   p_nombre   text,
   p_columnas jsonb,
@@ -354,7 +259,7 @@ declare
   v_vistas  text[] := '{}';
   r         jsonb;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.estructura');
 
   v_tabla := lower(btrim(coalesce(p_nombre, '')));
   if v_tabla <> 'empresa_datos' and v_tabla not like 'emp\_%' then
@@ -399,7 +304,6 @@ begin
 end
 $$;
 
--- ALTER TABLE ... DROP COLUMN
 create or replace function public.empresa_eliminar_columna(
   p_tabla   text,
   p_columna text,
@@ -415,7 +319,7 @@ declare
   v_columna text;
   v_sql     text;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.estructura');
 
   v_tabla   := public.emp_validar_tabla(p_tabla);
   v_columna := public.emp_validar_columna(p_columna);
@@ -429,7 +333,6 @@ begin
 end
 $$;
 
--- UPDATE de una celda, para completar una columna recien creada.
 create or replace function public.empresa_actualizar_celda(
   p_tabla   text,
   p_id      bigint,
@@ -447,7 +350,7 @@ declare
   v_tipo    text;
   v_expr    text;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.estructura');
 
   v_tabla   := public.emp_validar_tabla(p_tabla);
   v_columna := public.emp_validar_columna(p_columna);
@@ -493,11 +396,6 @@ begin
 end
 $$;
 
--- Vuelca una importacion propia en empresa_datos. Si la tabla existe no la
--- recrea: agrega las columnas que falten y anexa las filas, para no perder
--- las columnas que el trabajador haya sumado antes.
---
--- p_estructura: [{"original": "Precio S/.", "columna": "precio_s", "tipo": "numero"}, ...]
 create or replace function public.empresa_materializar(
   p_import_id  bigint,
   p_estructura jsonb
@@ -517,7 +415,7 @@ declare
   v_filas    integer;
   r          jsonb;
 begin
-  perform public.emp_exigir_trabajador();
+  perform public.emp_exigir_modulo('big_data.importar');
 
   if not exists (select 1 from public.imports where id = p_import_id) then
     raise exception 'La importacion % no existe', p_import_id using errcode = '42P01';
@@ -578,18 +476,9 @@ begin
 end
 $$;
 
--- =====================================================================
--- Permisos: solo un usuario autenticado puede invocar las funciones
--- publicas, y los ayudantes no se exponen por PostgREST.
--- =====================================================================
 
-revoke all on function
-  public.emp_exigir_trabajador(), public.emp_validar_tabla(text), public.emp_validar_columna(text),
-  public.emp_tipo_sql(text), public.emp_a_numero(text), public.emp_a_entero(text),
-  public.emp_a_booleano(text), public.emp_a_fecha(text), public.emp_expresion(text, text),
-  public.emp_registrar(text, text, jsonb, text, text)
-from public, anon, authenticated;
-
+-- Los ayudantes siguen sin exponerse por PostgREST; las publicas solo se
+-- invocan con sesion iniciada.
 revoke all on function
   public.empresa_tablas(), public.empresa_leer(text, integer, integer),
   public.empresa_agregar_columna(text, text, text, text, text),
@@ -607,3 +496,7 @@ grant execute on function
   public.empresa_actualizar_celda(text, bigint, text, text),
   public.empresa_materializar(bigint, jsonb)
 to authenticated;
+
+-- emp_exigir_trabajador() queda huerfana: ya no la invoca nadie. Se deja
+-- en pie porque borrarla no aporta nada y podria romper algo de la
+-- plataforma que no vemos desde aqui.

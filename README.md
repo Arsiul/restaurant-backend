@@ -36,6 +36,12 @@ La API queda disponible en `http://localhost:4000`.
 | `SUPABASE_ACCESS_TOKEN` | Token de la Management API. Solo para migraciones |
 | `PORT` | Puerto de la API |
 | `CLIENT_URL` | Origenes permitidos por CORS, separados por coma |
+| `EMPRESA_DOMINIO` | Dominio de correo de la empresa. Vacio desactiva la validacion |
+
+En este equipo la API corre en el **4001** y no en el 4000, porque ese puerto
+lo ocupa Docker Desktop (`com.docker.backend.exe`). El frontend apunta ahi con
+`VITE_API_URL`. Si el 4000 queda libre, basta con volver a ponerlo en esas dos
+variables.
 
 La API en ejecucion no usa la Management API. Las dos ultimas variables solo
 las lee `scripts/db.mjs`, que aplica las migraciones desde la terminal en
@@ -53,19 +59,26 @@ backend/
     import.routes.js           Carga y consulta de archivos
     comparar.routes.js         Comparacion entre restaurantes
     tarea.routes.js            Asignacion de tareas a los trabajadores
+    usuario.routes.js          Alta y mantenimiento de cuentas
   controllers/
     AuthController.js          Registro, verificacion, login y perfil
     ImportController.js        Lectura del archivo y guardado
     CompararController.js      Analisis de uno o dos archivos
     TareaController.js         Alta y seguimiento de tareas
+    UsuarioController.js       Cuentas: alta, rol, clave y baja
   models/
     AuthModel.js               Supabase Auth
     ImportModel.js             Tablas imports e import_rows
     TareaModel.js              Tabla tareas y destinatarios
+    UsuarioModel.js            Admin API de Supabase y tabla profiles
+    ErpModel.js                Estructura del ERP y reparto de accesos
   middlewares/
     auth.js                    Valida el token y resuelve el rol desde la base
     upload.js                  Recepcion del archivo con Multer
   utils/
+    dominio.js                 Usuario, correo y dominio de la empresa
+    modulos.js                 Que ruta abre cada clave de la plataforma
+    perfil.js                  Perfil y modulos efectivos, en un solo lugar
     Importer.js                Lectura de CSV y Excel sin estructura fija
     Estructura.js              Deteccion de columnas y tipos del archivo
     Mapeo.js                   Traduce columnas reales a roles comparables
@@ -75,6 +88,9 @@ backend/
     001_roles_e_imports.sql    Esquema, RLS y trigger de perfiles
     002_rpc_empresa.sql        Funciones que el frontend llama para el DDL
     003_tareas.sql             Tabla tareas, RLS y cierre automatico
+    004_usuarios_y_acceso.sql  Columna usuario en profiles
+    005_alinear_con_modulos.sql  Acceso por modulo. Consume la capa de la plataforma
+    006_erp_cuatro_modulos.sql   Los tres modulos del ERP que faltaban
   scripts/
     db.mjs                     Ejecuta SQL contra la Management API
     seed-users.mjs             Crea las cuentas de prueba
@@ -82,22 +98,142 @@ backend/
     probar-*.mjs               Pruebas manuales de cada flujo
 ```
 
-## Roles
+## El ERP y sus modulos
 
-El rol se guarda en la tabla `profiles` y se lee **siempre desde la base** en
-cada peticion. Lo que el frontend tenga en `localStorage` solo decide que se
-dibuja, nunca que se permite.
+El sistema es un **ERP de cuatro modulos**. Todo lo desarrollado hasta ahora
+vive dentro de uno solo, **Big Data**; los otros tres existen en la
+estructura y estan vacios.
 
-| Rol | Modulos |
+```
+ERP
+|- Big Data     Importar datos, Datasets, Analisis, Comparacion,
+|               Estructura de datos, Graficos
+|- Modulo 2     vacio
+|- Modulo 3     vacio
+|- Modulo 4     vacio
+```
+
+### Esa estructura no la inventa este repositorio
+
+La base la comparten varias aplicaciones y trae una capa de permisos que
+**aqui se consume pero no se administra**:
+
+| Objeto | De quien es |
 |---|---|
-| `trabajador` | Importar archivos, Datos de la empresa |
-| `admin` | Archivos cargados, Comparar restaurantes |
+| `cursos`, `curso_modulos`, `usuario_cursos`, `usuario_modulos` | Plataforma |
+| `profiles.activo` | Plataforma |
+| `app_role()`, `app_tiene_modulo(clave)`, `emp_exigir_modulo(clave)` | Plataforma |
+| `emp_mis_modulos()` | De aqui. Solo lectura sobre lo anterior |
+| Las siete funciones `empresa_*` | De aqui |
+
+Nada de la columna izquierda se crea, se altera ni se borra desde estas
+migraciones. `005` agrega una funcion de lectura y vuelve a emitir las
+funciones que si son de este proyecto; `006` solo inserta las filas de los
+tres modulos que faltaban.
+
+Los nombres, las descripciones y el orden salen de `curso_modulos`.
+`utils/modulos.js` no los repite: solo dice que ruta abre cada clave.
+
+### El acceso tiene dos niveles
+
+Es como lo resuelve `app_tiene_modulo` dentro de la base, y es tambien como
+lo pide el negocio:
+
+```
+entrar a una pantalla  =  tener el modulo del ERP  Y  tener esa pantalla
+```
+
+Es la interseccion, no la union. El administrador concede el modulo del ERP,
+y dentro elige si van todas sus pantallas, algunas o una sola. Marcar el
+modulo entero concede sus pantallas de una vez.
+
+Un modulo vacio se concede igual, aunque no tenga nada dentro todavia.
+
+| Clave | Pantalla | Que protege |
+|---|---|---|
+| `big_data.importar` | Importar datos | `POST /api/imports` y `empresa_materializar` |
+| `big_data.estructura` | Estructura de datos | Las otras seis funciones `empresa_*` |
+| `big_data.datasets` | Datasets | Ver los archivos de todos |
+| `big_data.comparar` | Comparacion | `/api/comparar` y `/api/tareas` |
+
+Big Data declara ademas `big_data.analisis` y `big_data.graficos`, que estan
+en el plan y todavia no tienen pantalla. El panel los muestra como tales en
+vez de esconderlos: el administrador tiene que poder ver el plan completo.
+
+Administrar cuentas (`/api/usuarios`) **no es un modulo**. Va atado al rol de
+administrador a proposito: poder crear cuentas es poder crear
+administradores, y si esa llave se pudiera repartir, repartir permisos
+dejaria de significar algo.
+
+### Donde se verifica
+
+Tres capas, y ninguna confia en la anterior:
+
+| Capa | Que hace |
+|---|---|
+| `App.jsx` | Decide que rutas se dibujan. Solo interfaz |
+| `requireModulo(clave)` | Corta la peticion en el servidor |
+| `emp_exigir_modulo(clave)` | Dentro de la base, en cada funcion `empresa_*` |
+
+El servidor resuelve los modulos llamando a `emp_mis_modulos()` **con el
+token de la persona**, no con la clave de servicio: asi la respuesta sale de
+la misma `auth.uid()` que usan las funciones de la base, y lo que decide
+Express no puede discrepar de lo que decide Postgres.
+
+Una cuenta nueva nace sin nada. Pertenecer no da acceso a nada por si solo, y
+el lanzador se lo dice en vez de dejarla frente a una pantalla vacia.
+
+## Cuentas y acceso
+
+Toda la empresa inicia sesion con un correo del mismo dominio. El **usuario**
+es la parte corta y vive en `profiles.usuario`: `jperez` entra como
+`jperez@rimberio.com`. El dominio se lee de `EMPRESA_DOMINIO`, asi que cambiar
+de razon social no obliga a tocar codigo. Si la variable esta vacia no se exige
+ninguno, para que un entorno recien clonado arranque sin configuracion previa.
+
+La regla aplica a las cuentas **nuevas**. Las que ya existian con otro dominio
+siguen entrando con su correo completo: 004 les asigna el usuario a partir de la
+parte previa a la arroba, numerandolo si estaba tomado.
+
+Hay dos formas de que exista una cuenta:
+
+| Via | Quien | Verificacion |
+|---|---|---|
+| Panel de usuarios | El administrador | Ninguna: nace activa |
+| Registro publico | La persona | Codigo de 8 digitos al correo |
+
+Las que crea el administrador nacen verificadas porque quien las da de alta ya
+demostro su rol contra la base: pedirle ademas a la persona que confirme un
+codigo no agrega ninguna garantia.
+
+El **rol nunca sale de la metadata del registro**. Si el trigger lo leyera de
+ahi, bastaria mandar `role: "admin"` al registrarse. Toda cuenta nace como
+trabajador y el administrador la promueve despues, con la clave de servicio.
+
+### Recuperar la contrasena
+
+Cualquiera puede pedir un codigo desde la pantalla de inicio de sesion. Se
+eligio codigo y no enlace por lo mismo que en el registro: un enlace obliga a
+declarar la URL de retorno en el proyecto de Supabase, y ahi el correo deja de
+funcionar cuando cambia el dominio del despliegue.
+
+```
+POST /api/auth/recuperar  ->  resetPasswordForEmail
+POST /api/auth/clave      ->  verifyOtp(type: recovery) y updateUser
+```
+
+La plantilla de **Reset Password** del proyecto tiene que incluir
+`{{ .Token }}`, igual que la de confirmacion que ya usa el registro.
+
+Si el dominio de la empresa no recibe correo real, ese codigo no llega a
+ninguna bandeja. Para eso existe `POST /api/usuarios/:id/clave`: el
+administrador restablece la contrasena a mano desde el panel.
 
 ## Modelo de datos
 
 | Tabla | Contenido |
 |---|---|
-| `profiles` | Rol y empresa de cada usuario. Se crea sola al registrarse |
+| `profiles` | Usuario, rol y empresa de cada cuenta. Se crea sola al registrarse |
 | `imports` | Un registro por archivo: nombre, empresa, si es propia, columnas |
 | `import_rows` | El contenido, en una columna `data` de tipo JSONB |
 | `cambios_estructura` | Bitacora de cada ALTER y CREATE aplicado |
@@ -120,24 +256,62 @@ nuevas, necesita ser una tabla real con columnas reales.
 | POST | `/api/auth/verify` | Valida el codigo y devuelve el token |
 | POST | `/api/auth/resend` | Reenvia el codigo |
 | POST | `/api/auth/login` | Inicia sesion, devuelve token y perfil |
+| POST | `/api/auth/recuperar` | Envia el codigo para restablecer la clave |
+| POST | `/api/auth/clave` | Canjea el codigo y fija la contrasena nueva |
+| GET | `/api/auth/dominio` | Dominio de la empresa. Publico, lo leen los formularios |
 | GET | `/api/auth/me` | Perfil vigente segun la base |
+
+Todas las rutas que reciben una identidad aceptan el campo `usuario` con el
+correo completo o con el usuario a secas: si llega `jperez` se le agrega el
+dominio antes de autenticar.
+
+El dominio se exige **solo al crear la cuenta**, no al entrar. Validarlo tambien
+al autenticar dejaria fuera a las cuentas anteriores a esta regla, y no aporta
+nada: un correo que no existe lo rechaza Supabase igual.
+
+`/api/auth/recuperar` responde `sent: true` exista o no la cuenta. Decir cual
+existe convertiria la ruta en un directorio de correos para cualquiera.
 
 ### Archivos
 
-| Metodo | Ruta | Rol | Descripcion |
+| Metodo | Ruta | Modulo | Descripcion |
 |---|---|---|---|
-| POST | `/api/imports` | trabajador | Carga un CSV o Excel |
-| GET | `/api/imports` | ambos | Lista archivos. El trabajador ve los suyos |
-| GET | `/api/imports/:id` | ambos | Metadata y filas, para el modal |
-| DELETE | `/api/imports/:id` | ambos | Elimina la importacion y sus filas |
+| POST | `/api/imports` | `importar` | Carga un CSV o Excel |
+| GET | `/api/imports` | `importar`, `datasets` o `comparar` | Lista archivos |
+| GET | `/api/imports/:id` | `importar`, `datasets` o `comparar` | Metadata y filas |
+| GET | `/api/imports/:id/resumen` | `importar`, `datasets` o `comparar` | Metricas, series e insights de ese archivo |
+| DELETE | `/api/imports/:id` | `importar` o `datasets` | Elimina la importacion y sus filas |
 
-### Comparacion (solo admin)
+Quien tenga `datasets` o `comparar` ve los archivos de todos; quien solo
+tenga `importar` ve los suyos. El alcance sale del modulo y ya no del rol,
+que es justamente para lo que sirve repartirlos.
+
+`/resumen` devuelve el mismo analisis que `/api/comparar` en modo
+individual, y vive aqui a proposito: mirar lo que uno acaba de importar es
+parte de importar, y no deberia exigir el modulo de comparacion.
+
+### Usuarios (solo admin)
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| GET | `/api/usuarios` | Todas las cuentas de la empresa |
+| POST | `/api/usuarios` | Crea una cuenta, ya verificada |
+| PATCH | `/api/usuarios/:id` | Cambia nombre, rol o empresa |
+| POST | `/api/usuarios/:id/clave` | Restablece la contrasena |
+| PUT | `/api/usuarios/:id/modulos` | Deja a la persona con exactamente esos modulos |
+| GET | `/api/usuarios/catalogo` | Los modulos que se pueden repartir |
+| DELETE | `/api/usuarios/:id` | Elimina la cuenta |
+
+Un administrador no puede cambiarse el rol ni eliminarse a si mismo: seria la
+forma mas rapida de dejar el panel sin nadie que lo administre.
+
+### Comparacion (modulo `comparar`)
 
 | Metodo | Ruta | Descripcion |
 |---|---|---|
 | POST | `/api/comparar` | Recibe uno o dos ids y devuelve metricas, series e insights |
 
-### Tareas (solo admin)
+### Tareas (modulo `comparar`)
 
 | Metodo | Ruta | Descripcion |
 |---|---|---|
@@ -299,3 +473,53 @@ producen una orden concreta se descartan antes de responder.
 
 Al analizar un archivo suelto no hay comparacion posible, asi que ese modo
 conserva sus observaciones informativas y no muestra el boton de asignar.
+
+## Organizaciones
+
+Ya existen, y no hubo que inventarlas: **el curso es la organizacion**. La
+capa de la plataforma implementa exactamente el modelo de GitHub que se
+pedia, con otros nombres.
+
+| Concepto pedido | Como se llama en la base |
+|---|---|
+| Organizacion | `cursos` |
+| Modulos que trae la organizacion | `curso_modulos` |
+| Ser miembro | `usuario_cursos` |
+| Permiso sobre un modulo | `usuario_modulos` |
+
+Con una diferencia que conviene tener presente. `app_tiene_modulo` exige
+**las dos cosas a la vez**:
+
+```
+acceso  =  estar inscrito en el curso  Y  tener el modulo asignado
+```
+
+No es la union sino la interseccion. Agregar a alguien a la organizacion no
+le concede todavia sus modulos: hay que asignarselos. Se puede llegar al
+mismo resultado sin tocar nada de la plataforma, con una accion del panel
+que cree de una vez las filas de todos los modulos del curso; cambiar
+`app_tiene_modulo` para que baste la inscripcion afectaria a las demas
+aplicaciones que comparten la base, y eso no se toca desde aqui.
+
+### El reparto desde el panel
+
+`models/AccesoModel.js` escribe en `usuario_cursos` y `usuario_modulos`. Son
+filas, no esquema: esas tablas existen justamente para esto.
+
+Conceder implica inscribir. Como la base exige las dos cosas, pedir un modulo
+sin inscripcion daria un acceso que despues no funciona, asi que
+`PUT /api/usuarios/:id/modulos` da de alta la inscripcion en el curso cuando
+hace falta. Eso es lo que hace que marcar todas las casillas equivalga a
+"agregarlo a la organizacion con todo", sin haber tocado `app_tiene_modulo`.
+
+Revocar apaga la fila (`activo = false`) en vez de borrarla, que es para lo
+que la plataforma puso esa columna: queda el rastro de quien tuvo que.
+
+**Solo se tocan filas de los cuatro modulos de esta aplicacion.** La base la
+comparten varias apps: `big_data.analisis` y `big_data.graficos` pertenecen
+al mismo curso pero no a este sistema, y una asignacion suya sobrevive
+intacta a cualquier cosa que se haga desde este panel.
+
+Al administrador no se le reparte nada: entra a todo por su rol, igual que lo
+resuelve `app_tiene_modulo`, y el panel se lo muestra asi en vez de ofrecer
+casillas que no significarian nada.

@@ -6,6 +6,8 @@ import authRoutes from "./routes/auth.routes.js"
 import importRoutes from "./routes/import.routes.js"
 import compararRoutes from "./routes/comparar.routes.js"
 import tareaRoutes from "./routes/tarea.routes.js"
+import usuarioRoutes from "./routes/usuario.routes.js"
+import erpRoutes from "./routes/erp.routes.js"
 
 const app = express()
 const port = process.env.PORT || 4000
@@ -22,6 +24,8 @@ app.use("/api/auth", authRoutes)
 app.use("/api/imports", importRoutes)
 app.use("/api/comparar", compararRoutes)
 app.use("/api/tareas", tareaRoutes)
+app.use("/api/usuarios", usuarioRoutes)
+app.use("/api/erp", erpRoutes)
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" })
@@ -36,8 +40,10 @@ app.use((error, req, res, next) => {
     return res.status(400).json({ error: "El archivo supera los 10 MB permitidos" })
   }
 
-  const status = error.message.includes("Formato no permitido") ? 400 : 500
-  res.status(status).json({ error: error.message || "Error interno del servidor" })
+  const mensaje = error.message || "Error interno del servidor"
+  const status = mensaje.includes("Formato no permitido") ? 400 : 500
+
+  res.status(status).json({ error: mensaje })
 })
 
 app.listen(port, () => {

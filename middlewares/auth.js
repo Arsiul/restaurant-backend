@@ -1,9 +1,12 @@
-import { adminClient, userClient } from "../config/supabase.js"
+import { userClient } from "../config/supabase.js"
+import { perfilCompleto } from "../utils/perfil.js"
 
 /**
  * Valida el token contra Supabase y adjunta el perfil a la peticion.
- * El rol se lee siempre de la base, nunca de lo que manda el cliente:
- * de otro modo bastaria editar el localStorage para ser administrador.
+ *
+ * El rol y los modulos se leen siempre de la base, nunca de lo que manda
+ * el cliente: de otro modo bastaria editar el localStorage para ser
+ * administrador.
  */
 export const requireAuth = async (req, res, next) => {
   const header = req.headers.authorization || ""
@@ -25,14 +28,16 @@ export const requireAuth = async (req, res, next) => {
       return res.status(401).json({ error: "Sesion expirada. Vuelve a iniciar sesion" })
     }
 
-    const { data: perfil } = await adminClient()
-      .from("profiles")
-      .select("id,email,full_name,role,empresa")
-      .eq("id", data.user.id)
-      .single()
+    const perfil = await perfilCompleto(data.user.id, token)
 
     if (!perfil) {
       return res.status(403).json({ error: "El usuario no tiene un perfil asignado" })
+    }
+
+    // La plataforma da de baja una cuenta sin borrarla. Una sesion abierta
+    // no deberia sobrevivir a eso.
+    if (perfil.activo === false) {
+      return res.status(403).json({ error: "Tu cuenta esta desactivada. Consulta con el administrador" })
     }
 
     req.token = token
@@ -50,9 +55,20 @@ export const requireAdmin = (req, res, next) => {
   next()
 }
 
-export const requireTrabajador = (req, res, next) => {
-  if (req.user.role !== "trabajador") {
-    return res.status(403).json({ error: "Esta seccion es solo para trabajadores" })
-  }
-  next()
+/**
+ * Exige acceso a un modulo concreto. Es la misma condicion que aplican las
+ * funciones empresa_* dentro de la base, para que ninguna via quede mas
+ * abierta que la otra.
+ */
+export const requireModulo = (clave) => (req, res, next) => {
+  if (req.user.modulos.includes(clave)) return next()
+
+  res.status(403).json({ error: "No tienes acceso a este modulo" })
+}
+
+/** Para lo que sirve a mas de un modulo, como el listado de archivos. */
+export const requireAlgunModulo = (...claves) => (req, res, next) => {
+  if (claves.some((clave) => req.user.modulos.includes(clave))) return next()
+
+  res.status(403).json({ error: "No tienes acceso a este modulo" })
 }

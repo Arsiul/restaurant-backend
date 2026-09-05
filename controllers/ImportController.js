@@ -1,5 +1,7 @@
 import ImportModel from "../models/ImportModel.js"
 import Importer from "../utils/Importer.js"
+import Comparador from "../utils/Comparador.js"
+import Insight from "../utils/Insight.js"
 import { sendError } from "../utils/apiError.js"
 
 const VISTA_PREVIA = 200
@@ -107,6 +109,36 @@ class ImportController {
     }
   }
 
+  /**
+   * GET /api/imports/:id/resumen
+   *
+   * Metricas, series e insights de un solo archivo. Es el mismo analisis
+   * que hace /api/comparar en modo individual, expuesto aqui porque
+   * pertenece a otra decision: mirar lo que uno acaba de importar es parte
+   * de importar, y no deberia exigir el modulo de comparacion.
+   */
+  async resumen(req, res) {
+    try {
+      const model = new ImportModel(req.user)
+      const importacion = await model.buscar(req.params.id)
+
+      if (!importacion) {
+        return res.status(404).json({ error: "La importacion no existe o no tienes acceso" })
+      }
+
+      const filas = await model.filas(importacion.id)
+      const analisis = Comparador.analizar(importacion, filas)
+
+      res.json({
+        empresa: analisis,
+        series: Comparador.series(analisis, null),
+        insights: Insight.comparar(analisis, null)
+      })
+    } catch (error) {
+      sendError(res, error)
+    }
+  }
+
   /** DELETE /api/imports/:id */
   async eliminar(req, res) {
     try {
@@ -131,5 +163,6 @@ export default {
   subir: controller.subir.bind(controller),
   listar: controller.listar.bind(controller),
   detalle: controller.detalle.bind(controller),
+  resumen: controller.resumen.bind(controller),
   eliminar: controller.eliminar.bind(controller)
 }

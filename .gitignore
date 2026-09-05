@@ -1,8 +1,36 @@
-node_modules
-dist
+# Dependencias
+node_modules/
+dist/
 
+# Variables de entorno.
+#
+# Aqui viven las unicas credenciales del proyecto: la clave de servicio de
+# Supabase y el token de la Management API. Lo que se versiona es
+# .env.example, con los nombres y sin los valores.
+#
+# .env.example no cae en estos patrones: ".env" casa el nombre exacto y
+# ".env.*.local" exige terminar en .local.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
+# Registros
+*.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+
+# Editor y sistema operativo
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporales y salidas de pruebas
+coverage/
+tmp/
+*.local
