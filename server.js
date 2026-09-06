@@ -8,6 +8,7 @@ import compararRoutes from "./routes/comparar.routes.js"
 import tareaRoutes from "./routes/tarea.routes.js"
 import usuarioRoutes from "./routes/usuario.routes.js"
 import erpRoutes from "./routes/erp.routes.js"
+import documentoRoutes from "./routes/documento.routes.js"
 
 const app = express()
 const port = process.env.PORT || 4000
@@ -26,6 +27,7 @@ app.use("/api/comparar", compararRoutes)
 app.use("/api/tareas", tareaRoutes)
 app.use("/api/usuarios", usuarioRoutes)
 app.use("/api/erp", erpRoutes)
+app.use("/api/documentos", documentoRoutes)
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" })

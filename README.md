@@ -66,12 +66,14 @@ backend/
     CompararController.js      Analisis de uno o dos archivos
     TareaController.js         Alta y seguimiento de tareas
     UsuarioController.js       Cuentas: alta, rol, clave y baja
+    DocumentoController.js     Documentacion de respaldo del curso
   models/
     AuthModel.js               Supabase Auth
     ImportModel.js             Tablas imports e import_rows
     TareaModel.js              Tabla tareas y destinatarios
     UsuarioModel.js            Admin API de Supabase y tabla profiles
     ErpModel.js                Estructura del ERP y reparto de accesos
+    DocumentoModel.js          Bucket de documentos y tabla documentos_curso
   middlewares/
     auth.js                    Valida el token y resuelve el rol desde la base
     upload.js                  Recepcion del archivo con Multer
@@ -79,6 +81,7 @@ backend/
     dominio.js                 Usuario, correo y dominio de la empresa
     modulos.js                 Que ruta abre cada clave de la plataforma
     perfil.js                  Perfil y modulos efectivos, en un solo lugar
+    huella.js                  Huella del contenido, para detectar duplicados
     Importer.js                Lectura de CSV y Excel sin estructura fija
     Estructura.js              Deteccion de columnas y tipos del archivo
     Mapeo.js                   Traduce columnas reales a roles comparables
@@ -91,8 +94,11 @@ backend/
     004_usuarios_y_acceso.sql  Columna usuario en profiles
     005_alinear_con_modulos.sql  Acceso por modulo. Consume la capa de la plataforma
     006_erp_cuatro_modulos.sql   Los tres modulos del ERP que faltaban
+    007_modulo_documentos.sql    Registra el modulo Documentos. Solo una fila
+    008_huella_de_importacion.sql  Impide importar dos veces el mismo contenido
   scripts/
     db.mjs                     Ejecuta SQL contra la Management API
+    rellenar-huella.mjs        Huella de las importaciones anteriores a 008
     seed-users.mjs             Crea las cuentas de prueba
     gen-csv.mjs                Genera los archivos de ejemplo
     probar-*.mjs               Pruebas manuales de cada flujo
@@ -276,11 +282,11 @@ existe convertiria la ruta en un directorio de correos para cualquiera.
 
 | Metodo | Ruta | Modulo | Descripcion |
 |---|---|---|---|
-| POST | `/api/imports` | `importar` | Carga un CSV o Excel |
+| POST | `/api/imports` | `importar` | Carga un CSV o Excel. Rechaza contenido repetido |
 | GET | `/api/imports` | `importar`, `datasets` o `comparar` | Lista archivos |
 | GET | `/api/imports/:id` | `importar`, `datasets` o `comparar` | Metadata y filas |
 | GET | `/api/imports/:id/resumen` | `importar`, `datasets` o `comparar` | Metricas, series e insights de ese archivo |
-| DELETE | `/api/imports/:id` | `importar` o `datasets` | Elimina la importacion y sus filas |
+| DELETE | `/api/imports/:id` | `importar` o `datasets` | Elimina la importacion, sus filas y lo materializado |
 
 Quien tenga `datasets` o `comparar` ve los archivos de todos; quien solo
 tenga `importar` ve los suyos. El alcance sale del modulo y ya no del rol,
@@ -290,11 +296,20 @@ que es justamente para lo que sirve repartirlos.
 individual, y vive aqui a proposito: mirar lo que uno acaba de importar es
 parte de importar, y no deberia exigir el modulo de comparacion.
 
+El borrado arrastra tres cosas: la fila de `imports`, sus `import_rows` y lo
+que se hubiera volcado en `empresa_datos`. Las primeras caen por la clave
+foranea; las ultimas **no**, porque `empresa_datos` la crea la funcion que
+materializa y no lleva clave foranea contra `imports`. Sin ese barrido
+quedarian filas que ya no se pueden rastrear hasta ningun archivo.
+
+Las columnas que el trabajador haya agregado a mano se conservan: se borran
+filas, no estructura.
+
 ### Usuarios (solo admin)
 
 | Metodo | Ruta | Descripcion |
 |---|---|---|
-| GET | `/api/usuarios` | Todas las cuentas de la empresa |
+| GET | `/api/usuarios` | Todas las cuentas, con lo efectivo y lo asignado |
 | POST | `/api/usuarios` | Crea una cuenta, ya verificada |
 | PATCH | `/api/usuarios/:id` | Cambia nombre, rol o empresa |
 | POST | `/api/usuarios/:id/clave` | Restablece la contrasena |
@@ -304,6 +319,47 @@ parte de importar, y no deberia exigir el modulo de comparacion.
 
 Un administrador no puede cambiarse el rol ni eliminarse a si mismo: seria la
 forma mas rapida de dejar el panel sin nadie que lo administre.
+
+El listado devuelve dos cosas distintas por cuenta. `modulos` es lo efectivo,
+que para un administrador es todo; `asignado` es lo que tiene concedido de
+verdad. La interfaz necesita la segunda para poder avisar de que al quitarle
+el rol se quedaria sin acceso a ninguna pantalla.
+
+### Documentos (modulo `documentos`)
+
+| Metodo | Ruta | Descripcion |
+|---|---|---|
+| GET | `/api/documentos` | Documentos del curso, con los modulos para clasificarlos |
+| POST | `/api/documentos` | Sube un PDF, Word, Excel o PowerPoint |
+| GET | `/api/documentos/:id/enlace` | URL firmada, valida 5 minutos |
+| PATCH | `/api/documentos/:id` | Cambia la descripcion o la clasificacion |
+| DELETE | `/api/documentos/:id` | Borra el archivo y su ficha |
+
+Este modulo **no crea nada**: se apoya en infraestructura que ya existia en
+la plataforma compartida.
+
+| Pieza | Que es |
+|---|---|
+| `storage.buckets` -> `documentos-cursos` | Bucket privado, 25 MB, siete tipos permitidos |
+| `documentos_curso` | La ficha de cada archivo: ruta, mime, tamano, descripcion |
+| `validar_documento_modulo_curso` | Trigger que comprueba que el modulo pertenezca al curso |
+
+La tabla tiene **RLS activo y ninguna politica**, y el bucket tampoco tiene:
+eso hace que solo la clave de servicio llegue a ellos. Por eso este modulo
+pasa entero por el backend, sin las funciones RPC que necesito el modulo del
+trabajador. El control de acceso lo hace `requireModulo` antes de entrar al
+modelo.
+
+Como el bucket es privado, ver un archivo no es abrir su ruta: el backend
+firma un enlace temporal con la clave de servicio.
+
+`documentos_curso.modulo_id` ya existia sin usar. Un documento puede quedar
+general del curso o colgar de un modulo concreto, y esa es la clasificacion
+que ofrece la pantalla.
+
+El borrado es real y no logico. Apagar la fila con `activo = false` deja el
+archivo ocupando el bucket sin que nadie pueda volver a verlo ni borrarlo, y
+eso se acumula: quedaban dos fichas asi de antes.
 
 ### Comparacion (modulo `comparar`)
 
@@ -346,6 +402,32 @@ columna. La funcion devuelve `tareasCerradas` para que la interfaz lo avise.
 ## Importacion de archivos
 
 Formatos aceptados: `.csv`, `.xlsx` y `.xls`. Maximo 10 MB y 20 000 filas.
+
+### El mismo archivo no entra dos veces
+
+Cada importacion guarda una **huella** de su contenido, y una segunda carga
+con la misma huella se rechaza con un 409 que dice cuando entro la primera y
+quien la subio.
+
+La huella se calcula sobre las filas ya leidas y no sobre los bytes del
+fichero, y esa diferencia importa: el mismo CSV guardado con otra
+codificacion, con otros saltos de linea o exportado de nuevo desde Excel da
+bytes distintos y los mismos datos. Lo que interesa es si esos datos ya
+estan, no si el fichero es identico. Renombrar el archivo tampoco sirve de
+nada.
+
+Las claves de cada fila se ordenan antes de serializar, asi que dos archivos
+con las mismas columnas en distinto orden dan la misma huella.
+
+La comprobacion no se limita a lo que ve quien sube: si otra persona ya
+cargo ese archivo, sigue siendo un duplicado. Acotarla por usuario
+permitiria que el mismo dato entrara tantas veces como trabajadores haya.
+
+Se verifica **antes** de escribir nada. De lo contrario quedaria la fila de
+`imports` creada y el archivo a medio guardar cuando se rechace.
+
+`scripts/rellenar-huella.mjs` calcula la huella de las importaciones
+anteriores a la migracion 008, con la misma funcion que usa el servidor.
 
 No hay columnas obligatorias ni nombres esperados. El importador detecta las
 cabeceras que traiga el archivo, deduce el tipo de cada una y guarda las filas

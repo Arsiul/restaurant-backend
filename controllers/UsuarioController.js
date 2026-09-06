@@ -40,12 +40,16 @@ class UsuarioController {
         cuentas.map((perfil) => {
           // El administrador pasa por encima del reparto, igual que en la
           // base: mostrarle casillas sueltas seria mentir sobre lo que ve.
-          const suyo =
-            perfil.role === "admin"
-              ? { cursos: todosCursos, modulos: todasClaves }
-              : reparto[perfil.id] || { cursos: [], modulos: [] }
+          const asignado = reparto[perfil.id] || { cursos: [], modulos: [] }
 
-          return { ...perfil, esYo: perfil.id === req.user.id, ...suyo }
+          const suyo =
+            perfil.role === "admin" ? { cursos: todosCursos, modulos: todasClaves } : asignado
+
+          // `asignado` va aparte de lo efectivo: para un administrador lo
+          // efectivo es todo, y el panel necesita saber que le quedaria si
+          // dejara de serlo. Sin eso no puede avisar de que va a quedarse
+          // sin acceso a nada.
+          return { ...perfil, esYo: perfil.id === req.user.id, ...suyo, asignado }
         })
       )
     } catch (error) {

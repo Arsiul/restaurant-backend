@@ -4,7 +4,7 @@ import { ARCHIVOS, COMPARAR } from "../utils/modulos.js"
 const LOTE = 500
 
 const CAMPOS =
-  "id,archivo,empresa,es_propia,formato,columnas,total_filas,tabla_fisica,user_id,created_at"
+  "id,archivo,empresa,es_propia,formato,columnas,total_filas,tabla_fisica,huella,user_id,created_at"
 
 /**
  * Acceso a las importaciones. Usa el cliente de servicio porque el
@@ -50,6 +50,28 @@ class ImportModel {
     const { data, error } = await this.aplicarAlcance(
       this.db.from("imports").select(CAMPOS).eq("id", id)
     ).maybeSingle()
+
+    if (error) throw error
+    return data
+  }
+
+  /**
+   * Busca una importacion con el mismo contenido.
+   *
+   * No se limita a lo que ve quien pregunta: si otra persona ya cargo ese
+   * archivo, sigue siendo un duplicado. Acotarlo por usuario permitiria
+   * que el mismo dato entrara tantas veces como trabajadores haya.
+   */
+  async buscarPorHuella(huella) {
+    if (!huella) return null
+
+    const { data, error } = await this.db
+      .from("imports")
+      .select(CAMPOS)
+      .eq("huella", huella)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
 
     if (error) throw error
     return data
@@ -107,11 +129,39 @@ class ImportModel {
     return count || 0
   }
 
-  async eliminar(id) {
-    // import_rows cae por la clave foranea con on delete cascade
+  /**
+   * Elimina la importacion, sus filas y lo que se volco a la tabla de la
+   * empresa.
+   *
+   * `import_rows` cae sola por la clave foranea, pero `empresa_datos` no:
+   * esa tabla la crea la funcion que materializa y no tiene clave foranea
+   * contra `imports`. Sin este barrido quedarian filas que ya no se pueden
+   * rastrear hasta ningun archivo.
+   */
+  async eliminar(id, tablaFisica = null) {
+    let materializadas = 0
+
+    // El nombre sale de la base y solo lo escribe empresa_materializar,
+    // pero igual se valida: va directo a la consulta.
+    const valida = tablaFisica === "empresa_datos" || /^emp_[a-z0-9_]+$/.test(tablaFisica || "")
+
+    if (tablaFisica && valida) {
+      const { count, error } = await this.db
+        .from(tablaFisica)
+        .delete({ count: "exact" })
+        .eq("import_id", id)
+
+      // 42P01 es que la tabla ya no existe. No es un fallo para lo que se
+      // esta haciendo: si no esta, no hay nada que limpiar.
+      if (error && error.code !== "42P01") throw error
+
+      materializadas = count || 0
+    }
+
     const { error } = await this.db.from("imports").delete().eq("id", id)
     if (error) throw error
-    return true
+
+    return { materializadas }
   }
 
   async actualizar(id, datos) {

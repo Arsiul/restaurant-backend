@@ -2,6 +2,7 @@ import ImportModel from "../models/ImportModel.js"
 import Importer from "../utils/Importer.js"
 import Comparador from "../utils/Comparador.js"
 import Insight from "../utils/Insight.js"
+import { huellaDeFilas } from "../utils/huella.js"
 import { sendError } from "../utils/apiError.js"
 
 const VISTA_PREVIA = 200
@@ -31,13 +32,38 @@ class ImportController {
 
       const model = new ImportModel(req.user)
 
+      // El mismo contenido no se importa dos veces. Se comprueba antes de
+      // escribir nada: si no, quedaria la fila creada y el archivo a medio
+      // guardar cuando se rechace.
+      const huella = huellaDeFilas(limpias)
+      const repetida = await model.buscarPorHuella(huella)
+
+      if (repetida) {
+        const autores = await model.autores([repetida.user_id])
+        const cuando = new Date(repetida.created_at).toLocaleDateString("es-PE")
+
+        return res.status(409).json({
+          error:
+            `Este archivo ya fue importado el ${cuando} por ` +
+            `${autores[repetida.user_id] || "otro usuario"} como "${repetida.archivo}". ` +
+            `Si lo necesitas de nuevo, elimina el anterior primero`,
+          duplicado: {
+            id: repetida.id,
+            archivo: repetida.archivo,
+            empresa: repetida.empresa,
+            fecha: repetida.created_at
+          }
+        })
+      }
+
       const importacion = await model.crear({
         archivo: req.file.originalname,
         empresa,
         es_propia: esPropia,
         formato,
         columnas: estructura.map((campo) => campo.original),
-        total_filas: limpias.length
+        total_filas: limpias.length,
+        huella
       })
 
       await model.guardarFilas(importacion.id, limpias)
@@ -149,8 +175,17 @@ class ImportController {
         return res.status(404).json({ error: "La importacion no existe o no tienes acceso" })
       }
 
-      await model.eliminar(importacion.id)
-      res.json({ eliminado: true })
+      const { materializadas } = await model.eliminar(
+        importacion.id,
+        importacion.tabla_fisica
+      )
+
+      res.json({
+        eliminado: true,
+        archivo: importacion.archivo,
+        filas: importacion.total_filas,
+        materializadas
+      })
     } catch (error) {
       sendError(res, error)
     }
