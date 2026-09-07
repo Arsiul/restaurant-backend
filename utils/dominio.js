@@ -10,6 +10,17 @@ import { normalizeName } from "./normalize.js"
  */
 export const DOMINIO = String(process.env.EMPRESA_DOMINIO || "").trim().toLowerCase()
 
+/**
+ * Nombre de la empresa. Es del sistema y no de cada cuenta.
+ *
+ * Antes vivia en `profiles.empresa` y se escribia a mano al dar de alta a
+ * alguien. Con una sola empresa eso no aportaba nada y si permitia que dos
+ * personas la escribieran distinto: sus importaciones propias quedaban
+ * etiquetadas con nombres diferentes y el mismo restaurante aparecia como
+ * dos empresas en la comparacion.
+ */
+export const EMPRESA = String(process.env.EMPRESA_NOMBRE || "").trim() || "Mi empresa"
+
 /** Normaliza un texto libre a un usuario valido: jperez, ana.torres, sede_lima. */
 export const aUsuario = (valor) =>
   normalizeName(valor)

@@ -1,5 +1,6 @@
 import { adminClient, userClient } from "../config/supabase.js"
 import { modulosDeLaApp } from "./modulos.js"
+import { EMPRESA } from "./dominio.js"
 
 const CAMPOS = "id,email,usuario,full_name,role,empresa,activo"
 
@@ -29,5 +30,8 @@ export const perfilCompleto = async (userId, token) => {
     claves = Array.isArray(data) ? data : []
   }
 
-  return { ...perfil, modulos: modulosDeLaApp(claves) }
+  // La empresa sale de la configuracion y no de la fila: hay cuentas
+  // antiguas con el valor por defecto que nadie eligio, y si se devolviera
+  // tal cual cada una etiquetaria sus importaciones con un nombre distinto.
+  return { ...perfil, empresa: EMPRESA, modulos: modulosDeLaApp(claves) }
 }

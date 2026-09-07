@@ -1,7 +1,7 @@
 import UsuarioModel from "../models/UsuarioModel.js"
 import { sendError } from "../utils/apiError.js"
 import ErpModel from "../models/ErpModel.js"
-import { aUsuario, correoDe } from "../utils/dominio.js"
+import { aUsuario, correoDe, EMPRESA } from "../utils/dominio.js"
 
 const ROLES = ["admin", "trabajador"]
 
@@ -63,7 +63,6 @@ class UsuarioController {
     const fullName = String(req.body.fullName || "").trim()
     const password = String(req.body.password || "")
     const role = ROLES.includes(req.body.role) ? req.body.role : "trabajador"
-    const empresa = String(req.body.empresa || "").trim() || req.user.empresa
 
     // Por defecto nace sin nada: pertenecer no da acceso a nada por si
     // solo. Si el formulario marco algo, se aplica al terminar el alta.
@@ -97,7 +96,8 @@ class UsuarioController {
         usuario,
         fullName,
         role,
-        empresa
+        // No se pide en el formulario: hay una sola empresa y es del sistema
+        empresa: EMPRESA
       })
 
       if (perfil.role !== "admin" && (cursos.length > 0 || modulos.length > 0)) {
@@ -113,13 +113,12 @@ class UsuarioController {
     }
   }
 
-  /** PATCH /api/usuarios/:id  -> nombre, rol o empresa */
+  /** PATCH /api/usuarios/:id  -> nombre o rol */
   async actualizar(req, res) {
     const id = req.params.id
     const datos = {}
 
     if (req.body.fullName !== undefined) datos.full_name = String(req.body.fullName).trim()
-    if (req.body.empresa !== undefined) datos.empresa = String(req.body.empresa).trim()
 
     if (req.body.role !== undefined) {
       if (!ROLES.includes(req.body.role)) {

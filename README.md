@@ -37,6 +37,7 @@ La API queda disponible en `http://localhost:4000`.
 | `PORT` | Puerto de la API |
 | `CLIENT_URL` | Origenes permitidos por CORS, separados por coma |
 | `EMPRESA_DOMINIO` | Dominio de correo de la empresa. Vacio desactiva la validacion |
+| `EMPRESA_NOMBRE` | Nombre de la empresa. Es del sistema, no de cada cuenta |
 
 En este equipo la API corre en el **4001** y no en el 4000, porque ese puerto
 lo ocupa Docker Desktop (`com.docker.backend.exe`). El frontend apunta ahi con
@@ -191,6 +192,10 @@ el lanzador se lo dice en vez de dejarla frente a una pantalla vacia.
 
 ## Cuentas y acceso
 
+**`EMPRESA_DOMINIO` es obligatoria en cualquier entorno.** Sin ella el correo
+se arma sin la parte del dominio y Supabase rechaza el alta con
+`Unable to validate email address: invalid format`.
+
 Toda la empresa inicia sesion con un correo del mismo dominio. El **usuario**
 es la parte corta y vive en `profiles.usuario`: `jperez` entra como
 `jperez@rimberio.com`. El dominio se lee de `EMPRESA_DOMINIO`, asi que cambiar
@@ -311,7 +316,7 @@ filas, no estructura.
 |---|---|---|
 | GET | `/api/usuarios` | Todas las cuentas, con lo efectivo y lo asignado |
 | POST | `/api/usuarios` | Crea una cuenta, ya verificada |
-| PATCH | `/api/usuarios/:id` | Cambia nombre, rol o empresa |
+| PATCH | `/api/usuarios/:id` | Cambia el nombre o el rol |
 | POST | `/api/usuarios/:id/clave` | Restablece la contrasena |
 | PUT | `/api/usuarios/:id/modulos` | Deja a la persona con exactamente esos modulos |
 | GET | `/api/usuarios/catalogo` | Los modulos que se pueden repartir |
@@ -319,6 +324,14 @@ filas, no estructura.
 
 Un administrador no puede cambiarse el rol ni eliminarse a si mismo: seria la
 forma mas rapida de dejar el panel sin nadie que lo administre.
+
+La empresa no se pide al dar de alta. Hay una sola y sale de
+`EMPRESA_NOMBRE`: cuando se escribia a mano en cada cuenta, dos personas
+podian ponerla distinta y sus importaciones propias quedaban etiquetadas con
+nombres diferentes, de modo que el mismo restaurante aparecia como dos
+empresas en la comparacion. La columna `profiles.empresa` sigue existiendo y
+se rellena con ese valor, pero el perfil que sirve la API ya no la lee de
+ahi: hay cuentas antiguas con el valor por defecto que nadie eligio.
 
 El listado devuelve dos cosas distintas por cuenta. `modulos` es lo efectivo,
 que para un administrador es todo; `asignado` es lo que tiene concedido de
