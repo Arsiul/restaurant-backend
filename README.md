@@ -187,6 +187,15 @@ token de la persona**, no con la clave de servicio: asi la respuesta sale de
 la misma `auth.uid()` que usan las funciones de la base, y lo que decide
 Express no puede discrepar de lo que decide Postgres.
 
+`GET /api/erp` devuelve **solo lo concedido**. Los modulos a los que una
+cuenta no llega no se envian, ni siquiera marcados como bloqueados: que no
+aparezcan en pantalla no basta si el navegador igual recibe sus nombres. Lo
+mismo dentro de un modulo concedido, donde solo viajan las pantallas
+concedidas; si fueran todas, la tarjeta delataria cuantas hay en total.
+
+El administrador recibe la estructura completa, porque entra a todo por su
+rol.
+
 Una cuenta nueva nace sin nada. Pertenecer no da acceso a nada por si solo, y
 el lanzador se lo dice en vez de dejarla frente a una pantalla vacia.
 

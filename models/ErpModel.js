@@ -75,11 +75,13 @@ class ErpModel {
   }
 
   /**
-   * La estructura anotada con lo que puede ver una persona concreta.
+   * Lo que una persona concreta puede ver del ERP.
    *
-   * Es lo que dibuja la pantalla de inicio. Los modulos a los que no llega
-   * se muestran apagados y no se esconden: saber que el ERP tiene cuatro
-   * partes, aunque solo se entre a una, ubica mejor que ver una sola.
+   * Devuelve **solo** lo concedido: los modulos a los que no llega no se
+   * envian, ni siquiera marcados como bloqueados. Que no aparezcan en la
+   * pantalla no basta si el navegador igual recibe sus nombres.
+   *
+   * El administrador recibe todo, porque entra a todo por su rol.
    */
   async paraUsuario(perfil) {
     const estructura = await this.estructura()
@@ -95,20 +97,18 @@ class ErpModel {
 
     const { cursos, modulos } = await this.accesosDe(perfil.id)
 
-    return estructura.map((curso) => {
-      const acceso = cursos.includes(curso.id)
-
-      return {
+    return estructura
+      .filter((curso) => cursos.includes(curso.id))
+      .map((curso) => ({
         ...curso,
-        acceso,
+        acceso: true,
         porRol: false,
-        modulos: curso.modulos.map((modulo) => ({
-          ...modulo,
-          // Sin el curso no hay modulo que valga, aunque la fila exista.
-          acceso: acceso && modulos.includes(modulo.id)
-        }))
-      }
-    })
+        // Dentro de un modulo concedido, solo las pantallas concedidas: si
+        // se enviaran todas, la tarjeta delataria cuantas hay en total.
+        modulos: curso.modulos
+          .filter((modulo) => modulos.includes(modulo.id))
+          .map((modulo) => ({ ...modulo, acceso: true }))
+      }))
   }
 
   /**
